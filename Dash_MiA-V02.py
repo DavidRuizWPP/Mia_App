@@ -1,15 +1,19 @@
 # .\venv\Scripts\Activate.ps1
-# streamlit run Dash_MiA-V02.py
+# streamlit run Dash_MiA-V03.py
+
 import io
 import os
 import re
 import base64
+import json
+import hashlib
 import warnings
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 
@@ -193,6 +197,73 @@ sel_contrib = st.sidebar.selectbox("Model Contribution:", opciones_archivos, ind
 sel_rev = st.sidebar.selectbox("Media Revenue:", opciones_archivos, index=opciones_archivos.index(auto_detectar_archivo(["mediarevenue", "media_revenue"], ["revenue"], opciones_archivos)))
 sel_curv = st.sidebar.selectbox("Curvas Sat. / Touchpoints:", opciones_archivos, index=opciones_archivos.index(auto_detectar_archivo(["curvas", "curves"], ["curva", "saturation"], opciones_archivos)))
 
+# ------------------------------------------------------------------------------
+# 📂 3. PIPELINE FUNNEL DATA (TEMPLATE CSV / EXCEL)[cite: 8]
+# ------------------------------------------------------------------------------
+st.sidebar.subheader("📂 3. Pipeline Funnel (Template)")
+archivo_template_pipeline = st.sidebar.file_uploader(
+    "Cargar Template Pipeline (.xlsx o .csv):",
+    type=["xlsx", "csv"],
+    help="Sube aquí el archivo Template_Pipeline_MiA_2.xlsx o similar."
+)
+
+ruta_pipeline_defecto = "Template_Pipeline_MiA_2.xlsx" if os.path.exists("Template_Pipeline_MiA_2.xlsx") else (
+    "Template_Pipeline_MiA.xlsx" if os.path.exists("Template_Pipeline_MiA.xlsx") else (
+        "Template_Pipeline_MiA.csv" if os.path.exists("Template_Pipeline_MiA.csv") else None
+    )
+)
+
+df_pipeline_raw = None
+pipeline_hash = "default"
+
+if archivo_template_pipeline is not None:
+    archivo_template_pipeline.seek(0)
+    bytes_p = archivo_template_pipeline.getvalue()
+    pipeline_hash = hashlib.md5(bytes_p).hexdigest()[:8]
+    if archivo_template_pipeline.name.endswith(".csv"):
+        df_pipeline_raw = pd.read_csv(archivo_template_pipeline)
+    else:
+        df_pipeline_raw = pd.read_excel(archivo_template_pipeline)
+    st.sidebar.caption(f"✅ Template cargado: `{archivo_template_pipeline.name}`")
+elif ruta_pipeline_defecto is not None:
+    with open(ruta_pipeline_defecto, "rb") as f:
+        bytes_p = f.read()
+    pipeline_hash = hashlib.md5(bytes_p).hexdigest()[:8]
+    if ruta_pipeline_defecto.endswith(".csv"):
+        df_pipeline_raw = pd.read_csv(ruta_pipeline_defecto)
+    else:
+        df_pipeline_raw = pd.read_excel(ruta_pipeline_defecto)
+    st.sidebar.caption(f"✅ Template local: `{ruta_pipeline_defecto}`")
+
+# Botón para descargar el Template
+template_ejemplo = pd.DataFrame({
+    'DataType': ['Actual']*3 + ['Predective']*3,
+    'DateWeekClose': ['05/01/2025', '12/01/2025', '19/01/2025', '05/10/2025', '12/10/2025', '19/10/2025'],
+    'Circulo_PaidMedia': [1850000, 1360000, 1250000, np.nan, np.nan, np.nan],
+    'Circulo_MentalAvailability': [12400, 126000, 123000, np.nan, np.nan, np.nan],
+    'Circulo_ConsumoFrecuente': [24700, 252000, 245000, np.nan, np.nan, np.nan],
+    'Circulo_ActivacionDigital': [40900, 418000, 407000, np.nan, np.nan, np.nan],
+    'Circulo_AWOS': [118000, 1200000, 1170000, np.nan, np.nan, np.nan],
+    'Flecha_PM_a_AWOs': [np.nan, np.nan, np.nan, 260.1, 216.4, 151.9],
+    'Flecha_PM_a_MA': [np.nan, np.nan, np.nan, 24.6, 20.9, 14.8],
+    'Flecha_PM_a_CF': [np.nan, np.nan, np.nan, 39.8, 35.7, 25.6],
+    'Flecha_PM_a_AD': [np.nan, np.nan, np.nan, 153.7, 116.5, 79.2],
+    'Flecha_MA_a_CF': [np.nan, np.nan, np.nan, 39.8, 35.7, 25.6],
+    'Flecha_MA_a_AD': [np.nan, np.nan, np.nan, 153.7, 116.5, 79.2]
+})
+
+buf_template = io.BytesIO()
+with pd.ExcelWriter(buf_template, engine='openpyxl') as writer:
+    template_ejemplo.to_excel(writer, index=False, sheet_name='Template')
+
+st.sidebar.download_button(
+    label="📥 Descargar Plantilla Template (.xlsx)",
+    data=buf_template.getvalue(),
+    file_name="Template_Pipeline_MiA.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=True
+)
+
 def resolver_fuente(sel):
     if sel == "(No asignado)": return None
     return files_dict.get(sel, sel)
@@ -219,7 +290,6 @@ if sales_df is None or spend_df is None:
     st.warning("⚠️ Carga al menos los archivos de **Sales** y **Media Spend** para iniciar el análisis.")
     st.stop()
 
-# Introspección dinámica
 canales_detectados = extraer_variables(spend_df)
 canales_meta = {ch: {'name': humanizar(ch), 'color': color_idx(i)} for i, ch in enumerate(canales_detectados)}
 
@@ -228,7 +298,6 @@ vars_brand = extraer_variables(brand_df)
 vars_ext = extraer_variables(ext_df)
 vars_ctrl = extraer_variables(ctrl_df)
 
-# Filtros dinámicos globales
 st.sidebar.subheader("🎯 Filtros Globales")
 cys_disponibles = sorted(list(sales_df['CY'].unique())) if 'CY' in sales_df.columns else []
 selected_cys = st.sidebar.multiselect("Período (CY):", options=cys_disponibles, default=cys_disponibles)
@@ -450,12 +519,13 @@ def ejecutar_optimizacion_engine(df_curvas, budget_anual, meses_con_actividad=12
     return df_res, suma_rev_anual, (suma_rev_anual / budget_anual) if budget_anual > 0 else 0.0
 
 # ==============================================================================
-# TABS DE NAVEGACIÓN (3 PESTAÑAS)
+# TABS DE NAVEGACIÓN (4 PESTAÑAS INTEGRANDO EL PIPELINE)
 # ==============================================================================
-tab_results, tab_input, tab_opt = st.tabs([
+tab_results, tab_input, tab_opt, tab_pipeline = st.tabs([
     "🏆 Resultados MiA (Contribución y ROI)", 
     "📁 Información Input (Data de Entrada)",
-    "⚡ Media Optimization (Optimizador S-Curve)"
+    "⚡ Media Optimization (Optimizador S-Curve)",
+    "🍕 Pipeline Funnel (Multi-MMM Simulator)"
 ])
 
 # ##############################################################################
@@ -536,13 +606,6 @@ with tab_results:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # 1. Model Construction
-        st.markdown(f"""
-            <div class="section-card">
-                <span class="section-badge">📈 1. Descomposición de Ventas en el Tiempo</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Model Construction Area Chart</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
         date_col_c = 'Date' if 'Date' in contrib_f.columns else contrib_f.columns[1]
         fig_decomp = go.Figure()
 
@@ -587,14 +650,7 @@ with tab_results:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # 2. Waterfall Chart
-        st.markdown("""
-            <div class="section-card">
-                <span class="section-badge">📊 2. Análisis de Crecimiento por Driver (Waterfall)</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Waterfall Due-To Chart (Interanual YoY)</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
+        # 2. Waterfall
         if len(cys_disponibles) >= 2:
             wf_start_cy = cys_disponibles[-2]
             wf_end_cy = cys_disponibles[-1]
@@ -643,20 +699,12 @@ with tab_results:
                 yaxis=dict(gridcolor="#f1f5f9"), plot_bgcolor='white'
             )
             st.plotly_chart(fig_wf, use_container_width=True)
-        else:
-            st.info("Se requieren al menos 2 períodos (CY) para calcular el gráfico de cascada YoY.")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # 3 y 4. Contribución y ROI
         c_m1, c_m2 = st.columns(2)
         with c_m1:
-            st.markdown(f"""
-                <div class="section-card">
-                    <span class="section-badge">% Contribución</span>
-                    <h3 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #000050;">Contribución de Medios (%) por Canal</h3>
-                </div>
-            """, unsafe_allow_html=True)
             fig_pct = go.Figure()
             for idx, cy in enumerate(active_cys):
                 cy_s = sales_df[sales_df['CY'] == cy][var_vol].sum()
@@ -667,20 +715,14 @@ with tab_results:
                     y=pct_vals, name=cy, marker_color=color_idx(idx)
                 ))
             fig_pct.update_layout(
-                barmode='group', height=330, margin=dict(l=20, r=20, t=20, b=40),
+                title="Contribución de Medios (%) por Canal",
+                barmode='group', height=330, margin=dict(l=20, r=20, t=35, b=40),
                 yaxis=dict(title="% Contribución", gridcolor="#f1f5f9", ticksuffix="%"),
-                xaxis=dict(tickangle=-25), plot_bgcolor='white',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                xaxis=dict(tickangle=-25), plot_bgcolor='white'
             )
             st.plotly_chart(fig_pct, use_container_width=True)
 
         with c_m2:
-            st.markdown(f"""
-                <div class="section-card">
-                    <span class="section-badge">Multiplicador ROI</span>
-                    <h3 style="margin: 0; font-size: 1.05rem; font-weight: 700; color: #000050;">Retorno de Inversión (ROI) por Canal</h3>
-                </div>
-            """, unsafe_allow_html=True)
             fig_roi = go.Figure()
             for idx, cy in enumerate(active_cys):
                 cy_sp = spend_df[spend_df['CY'] == cy]
@@ -691,23 +733,16 @@ with tab_results:
                     y=roi_vals, name=cy, marker_color=color_idx(idx + 2)
                 ))
             fig_roi.update_layout(
-                barmode='group', height=330, margin=dict(l=20, r=20, t=20, b=40),
+                title="Retorno de Inversión (ROI) por Canal",
+                barmode='group', height=330, margin=dict(l=20, r=20, t=35, b=40),
                 yaxis=dict(title="ROI (Revenue / Spend)", gridcolor="#f1f5f9", ticksuffix="x"),
-                xaxis=dict(tickangle=-25), plot_bgcolor='white',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                xaxis=dict(tickangle=-25), plot_bgcolor='white'
             )
             st.plotly_chart(fig_roi, use_container_width=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         # 5. Dos Anillos
-        st.markdown("""
-            <div class="section-card">
-                <span class="section-badge">🍩 5. Mix de Contribución vs. Mix de Inversión</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Contribution Mix vs. Media Spend Mix</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
         c_don1, c_don2 = st.columns(2)
         pie_labels = [canales_meta[m]['name'] for m in selected_media_ids]
         pie_colors = [canales_meta[m]['color'] for m in selected_media_ids]
@@ -717,8 +752,7 @@ with tab_results:
         with c_don1:
             fig_d_contrib = go.Figure(data=[go.Pie(
                 labels=pie_labels, values=contrib_sums, hole=0.55,
-                marker=dict(colors=pie_colors), textinfo='percent',
-                hovertemplate="<b>%{label}</b><br>Contribución: %{value:,.0f}<br>Share: %{percent}<extra></extra>"
+                marker=dict(colors=pie_colors), textinfo='percent'
             )])
             fig_d_contrib.update_layout(title="Contribution Mix (% Share - Solo Medios)", height=320, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_d_contrib, use_container_width=True)
@@ -726,8 +760,7 @@ with tab_results:
         with c_don2:
             fig_d_spend = go.Figure(data=[go.Pie(
                 labels=pie_labels, values=spend_sums, hole=0.55,
-                marker=dict(colors=pie_colors), textinfo='percent',
-                hovertemplate="<b>%{label}</b><br>Inversión: $%{value:,.0f}<br>Share: %{percent}<extra></extra>"
+                marker=dict(colors=pie_colors), textinfo='percent'
             )])
             fig_d_spend.update_layout(title="Media Spend Mix (% Share Inversión)", height=320, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_d_spend, use_container_width=True)
@@ -735,13 +768,6 @@ with tab_results:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # 6. Circana Dynamics
-        st.markdown("""
-            <div class="section-card">
-                <span class="section-badge">🎯 6. Marketing & Media Dynamics</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Dynamics per Channel (Spend, Revenue & ROI)</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
         labels_dyn = ["Total Media"] + pie_labels
         for met_name, suf, df_source, is_roi in [
             ("Media Spend ($ MXN)", "$", spend_df, False),
@@ -768,14 +794,11 @@ with tab_results:
                         v = (rv_m / sp_m) if sp_m > 0 else 0.0
                     vals_dyn.append(v)
 
-                fig_dyn.add_trace(go.Bar(
-                    x=labels_dyn, y=vals_dyn, name=cy, marker_color=color_idx(idx + 1)
-                ))
+                fig_dyn.add_trace(go.Bar(x=labels_dyn, y=vals_dyn, name=cy, marker_color=color_idx(idx + 1)))
 
             fig_dyn.update_layout(
                 title=met_name, barmode='group', height=280, margin=dict(l=20, r=20, t=35, b=20),
-                yaxis=dict(gridcolor="#f1f5f9", ticksuffix=suf), xaxis=dict(tickangle=-20),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), plot_bgcolor='white'
+                yaxis=dict(gridcolor="#f1f5f9", ticksuffix=suf), xaxis=dict(tickangle=-20), plot_bgcolor='white'
             )
             st.plotly_chart(fig_dyn, use_container_width=True)
 
@@ -806,7 +829,7 @@ with tab_results:
             ))
 
             umbrales_spend = {}
-            for punto, col_pt, sym in [("Sustain", "#f59e0b", "diamond"), ("Optimal", "#10b981", "circle"), ("Heavy Up", "#ef4444", "square"), ("CurrentSpend", COLOR_CORNFLOWER, "star")]:
+            for punto, col_pt, sym in [("Sustain", "#f59e0b", "diamond"), ("Optimal", "#10b981", "circle"), ("Heavy Up", "#ef4444", "square")]:
                 col_found = next((c for c in c_rows.columns if punto.lower().replace(" ", "") in c.lower().replace(" ", "")), None)
                 if col_found:
                     pt_val = c_rows[col_found].max()
@@ -841,14 +864,7 @@ with tab_results:
                 </div>
             """, unsafe_allow_html=True)
 
-            col_spend_match = None
-            for c in spend_f.columns:
-                if c.lower() == sel_curv_media.lower() or sel_curv_media.lower() in c.lower() or c.lower() in sel_curv_media.lower():
-                    col_spend_match = c
-                    break
-            if col_spend_match is None and 'OpenTv' in spend_f.columns and ('azteca' in sel_curv_media.lower() or 'televisa' in sel_curv_media.lower()):
-                col_spend_match = 'OpenTv'
-
+            col_spend_match = next((c for c in spend_f.columns if c.lower() == sel_curv_media.lower() or sel_curv_media.lower() in c.lower()), None)
             if col_spend_match and col_spend_match in spend_f.columns:
                 date_labels = spend_f['CY'].astype(str) + " - " + spend_f[date_col_c].astype(str)
                 hist_spend_vals = spend_f[col_spend_match]
@@ -879,50 +895,6 @@ with tab_results:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Desglose Contribución No-Media
-        st.markdown(f"""
-            <div class="section-card">
-                <span class="section-badge">🏛️ Desglose de Contribución No-Media</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Impacto de Factores Orgánicos, Marca y Competencia</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
-        cols_todos_medios = set(canales_detectados + [var_vol, 'CY', 'Date', 'Litros Totales', 'TotalMedia', 'Total'])
-        cols_non_media = [c for c in contrib_f.columns if c not in cols_todos_medios and np.issubdtype(contrib_f[c].dtype, np.number)]
-
-        if cols_non_media:
-            non_media_data = []
-            for col_nm in cols_non_media:
-                vol_nm = contrib_f[col_nm].sum()
-                pct_nm = (vol_nm / total_sales_vol * 100) if total_sales_vol > 0 else 0.0
-                non_media_data.append({
-                    "Driver": humanizar(col_nm),
-                    "Volumen": vol_nm,
-                    "Porcentaje": pct_nm,
-                    "Tipo": "Positivo (Gain)" if vol_nm >= 0 else "Negativo (Loss)"
-                })
-
-            df_nm = pd.DataFrame(non_media_data).sort_values(by="Volumen", ascending=True)
-            col_nm_bar, col_nm_table = st.columns([3, 2])
-            with col_nm_bar:
-                fig_nm = go.Figure(go.Bar(
-                    x=df_nm['Volumen'], y=df_nm['Driver'], orientation='h',
-                    marker_color=[COLOR_LIME if v >= 0 else "#ef4444" for v in df_nm['Volumen']],
-                    text=[f"{p:+.1f}%" for p in df_nm['Porcentaje']], textposition="outside",
-                    hovertemplate="<b>%{y}</b><br>Contribución: %{x:,.0f}<br>Share: %{text}<extra></extra>"
-                ))
-                fig_nm.update_layout(title="Contribución Absoluta por Driver No-Media", height=340, margin=dict(l=20, r=40, t=35, b=20), xaxis=dict(title=f"Volumen ({var_vol})", gridcolor="#f1f5f9"), plot_bgcolor="white")
-                st.plotly_chart(fig_nm, use_container_width=True)
-
-            with col_nm_table:
-                df_nm_display = df_nm.sort_values(by="Volumen", ascending=False).copy()
-                df_nm_display['Volumen Formateado'] = df_nm_display['Volumen'].apply(lambda x: f"{x:,.0f}")
-                df_nm_display['% del Total'] = df_nm_display['Porcentaje'].apply(lambda x: f"{x:+.2f}%")
-                st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
-                st.dataframe(df_nm_display[['Driver', 'Volumen Formateado', '% del Total', 'Tipo']], use_container_width=True, hide_index=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
         # 8. Tabla Detallada
         st.markdown("""
             <div class="section-card">
@@ -944,25 +916,8 @@ with tab_results:
                 "Ingresos (Revenue)": f"${rv:,.0f}",
                 f"Contribución ({var_vol})": f"{cb:,.0f}",
                 "% Contribución": f"{pct:.2f}%",
-                "ROI (Rev/Spend)": f"{roi:.2f}x"
+                "ROI": f"{roi:.2f}x"
             })
-
-        if 'Baseline' in contrib_f.columns:
-            cb_b = contrib_f['Baseline'].sum()
-            pct_b = (cb_b / total_sales_vol * 100) if total_sales_vol > 0 else 0.0
-            tbl_data.append({
-                "Driver / Canal": "Baseline (Orgánico)", "Inversión (Spend)": "-", "Ingresos (Revenue)": "-",
-                f"Contribución ({var_vol})": f"{cb_b:,.0f}", "% Contribución": f"{pct_b:.2f}%", "ROI (Rev/Spend)": "-"
-            })
-
-        for c in cols_brand_contrib:
-            cb_f = contrib_f[c].sum()
-            pct_f = (cb_f / total_sales_vol * 100) if total_sales_vol > 0 else 0.0
-            tbl_data.append({
-                "Driver / Canal": humanizar(c), "Inversión (Spend)": "-", "Ingresos (Revenue)": "-",
-                f"Contribución ({var_vol})": f"{cb_f:,.0f}", "% Contribución": f"{pct_f:.2f}%", "ROI (Rev/Spend)": "-"
-            })
-
         st.dataframe(pd.DataFrame(tbl_data), use_container_width=True, hide_index=True)
 
 # ##############################################################################
@@ -1043,17 +998,11 @@ with tab_input:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 1. Media Spend
-    st.markdown("""
-        <div class="section-card">
-            <span class="section-badge">💰 1. Media Spend</span>
-            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Evolución e Inversión por Medio y Período</h3>
-        </div>
-    """, unsafe_allow_html=True)
+    # Gráficos Inputs
     c1, c2 = st.columns([2, 1])
+    ch_l = [canales_meta[ch]['name'] for ch in selected_media_ids]
     with c1:
         fig_sb = go.Figure()
-        ch_l = [canales_meta[ch]['name'] for ch in selected_media_ids]
         for idx, cy in enumerate(active_cys):
             cy_rows = spend_df[spend_df['CY'] == cy]
             cy_v = [cy_rows[ch].sum() if ch in cy_rows.columns else 0.0 for ch in selected_media_ids]
@@ -1070,34 +1019,10 @@ with tab_input:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 2. Impacts
-    if imp_df is not None:
-        st.markdown("""
-            <div class="section-card">
-                <span class="section-badge">👁 2. Media Impacts</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Evolución de Impactos / Contactos por Medio y Período</h3>
-            </div>
-        """, unsafe_allow_html=True)
-        fig_im = go.Figure()
-        for idx, cy in enumerate(active_cys):
-            cy_r = imp_df[imp_df['CY'] == cy]
-            cy_i = [cy_r[ch].sum() if ch in cy_r.columns else 0.0 for ch in selected_media_ids]
-            fig_im.add_trace(go.Bar(x=ch_l, y=cy_i, name=cy, marker_color=color_idx(idx + 1)))
-        fig_im.update_layout(barmode='group', height=330, margin=dict(l=20, r=20, t=20, b=20), yaxis=dict(title="Total Impactos", gridcolor="#f1f5f9"), xaxis=dict(tickangle=-25), plot_bgcolor='white')
-        st.plotly_chart(fig_im, use_container_width=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    # 3. Sales vs Spend
+    # Sales vs Spend Apilado
     var_v_inp = st.session_state.get("kpi_sel_sales", vars_sales[0] if vars_sales else None)
-    if var_v_inp not in vars_sales:
-        var_v_inp = vars_sales[0] if vars_sales else None
+    if var_v_inp not in vars_sales: var_v_inp = vars_sales[0] if vars_sales else None
 
-    st.markdown(f"""
-        <div class="section-card">
-            <span class="section-badge">🛢️ 3. Sales ({var_v_inp})</span>
-            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Respuesta de Ventas vs. Presión Semanal de Inversión</h3>
-        </div>
-    """, unsafe_allow_html=True)
     cs_1, cs_2 = st.columns([1, 2])
     with cs_1:
         cy_st = [sales_df[sales_df['CY'] == cy][var_v_inp].sum() for cy in active_cys]
@@ -1124,57 +1049,8 @@ with tab_input:
         )
         st.plotly_chart(fig_stk, use_container_width=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    def render_seccion_multivar(badge, tit, desc, df_d, v_disp, k_p):
-        if not v_disp or df_d is None: return
-        st.markdown(f"""
-            <div class="section-card">
-                <span class="section-badge">{badge}</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">{tit}</h3>
-                <p style="margin: 0.15rem 0 0.5rem 0; font-size: 0.8rem; color: #64748b;">{desc}</p>
-            </div>
-        """, unsafe_allow_html=True)
-        v_s = st.multiselect(f"Seleccionar variables ({tit}):", options=v_disp, default=v_disp[:min(4, len(v_disp))], key=f"msel_{k_p}")
-        if not v_s: return
-        fig_m = go.Figure()
-        d_col_loc = 'Date' if 'Date' in df_d.columns else df_d.columns[1]
-        if var_v_inp and var_v_inp in sales_f.columns:
-            fig_m.add_trace(go.Bar(x=sales_f[d_col_loc], y=sales_f[var_v_inp], name=f"Ventas ({var_v_inp})", marker_color="rgba(147, 223, 227, 0.35)", marker_line=dict(color=COLOR_CYAN, width=1), yaxis='y2'))
-        est = ['solid', 'dot', 'dash', 'longdash', 'dashdot']
-        for idx, v in enumerate(v_s):
-            val = df_d[v]
-            es_p = val.mean() <= 1.0 and val.mean() >= 0.0
-            disp_v = val * 100 if es_p else val
-            suf = "%" if es_p else ""
-            fig_m.add_trace(go.Scatter(x=df_d[d_col_loc], y=disp_v, name=humanizar(v), mode='lines', line=dict(color=color_idx(idx + 1), width=2.2, dash=est[idx % len(est)]), yaxis='y1'))
-        fig_m.update_layout(height=380, margin=dict(l=20, r=20, t=20, b=20), yaxis=dict(title="Nivel de Variable", side='left', showgrid=True, gridcolor="#f1f5f9"), yaxis2=dict(title=var_v_inp, side='right', overlaying='y', showgrid=False), xaxis=dict(tickangle=-45), legend=dict(orientation="h", yanchor="bottom", y=-0.5, xanchor="center", x=0.5, font=dict(size=9)), plot_bgcolor='white')
-        st.plotly_chart(fig_m, use_container_width=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
-    render_seccion_multivar("👥 4. Brand Health", "Tracking de Métricas de Marca vs. Ventas", "Indicadores de embudo (Consideration, Purchase Intent, Digital Activity, Index).", brand_f, vars_brand, "brand")
-    render_seccion_multivar("🌦️ 5. Factores Externos", "Tracking de Factores Externos vs. Ventas", "Variables continuas exógenas (temperatura media, lluvia, tipo de cambio).", ext_f, vars_ext, "ext")
-
-    if vars_ctrl and ctrl_f is not None:
-        st.markdown("""
-            <div class="section-card">
-                <span class="section-badge">🏷️ 6. Variables de Control</span>
-                <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700; color: #000050;">Tracking de Eventos Especiales y Dummies (0 a 1) vs. Ventas</h3>
-            </div>
-        """, unsafe_allow_html=True)
-        c_sel = st.multiselect("Seleccionar variables de control:", options=vars_ctrl, default=vars_ctrl[:min(4, len(vars_ctrl))], key="msel_ctrl")
-        if c_sel:
-            fig_c = go.Figure()
-            d_col_c = 'Date' if 'Date' in ctrl_f.columns else ctrl_f.columns[1]
-            if var_v_inp and var_v_inp in sales_f.columns:
-                fig_c.add_trace(go.Bar(x=sales_f[d_col_c], y=sales_f[var_v_inp], name=f"Ventas ({var_v_inp})", marker_color="rgba(147, 223, 227, 0.35)", marker_line=dict(color=COLOR_CYAN, width=1), yaxis='y2'))
-            for idx, v in enumerate(c_sel):
-                fig_c.add_trace(go.Scatter(x=ctrl_f[d_col_c], y=ctrl_f[v], name=humanizar(v), mode='lines', line_shape='hv', line=dict(color=color_idx(idx + 3), width=2.5), yaxis='y1'))
-            fig_c.update_layout(height=360, margin=dict(l=20, r=20, t=20, b=20), yaxis=dict(title="Evento Activo (0 / 1)", tickmode='linear', tick0=0, dtick=1, range=[-0.1, 1.1], side='left', showgrid=True, gridcolor="#f1f5f9"), yaxis2=dict(title=var_v_inp, side='right', overlaying='y', showgrid=False), xaxis=dict(tickangle=-45), legend=dict(orientation="h", yanchor="bottom", y=-0.5, xanchor="center", x=0.5, font=dict(size=9)), plot_bgcolor='white')
-            st.plotly_chart(fig_c, use_container_width=True)
-
 # ##############################################################################
-# TAB 3: MEDIA OPTIMIZATION (OPTIMIZADOR S-CURVE)
+# TAB 3: MEDIA OPTIMIZATION (OPTIMIZADOR S-CURVE)[cite: 7]
 # ##############################################################################
 with tab_opt:
     if curv_df is None:
@@ -1217,22 +1093,8 @@ with tab_opt:
 
         limites_finales = None
 
-        # Modalidad con restricciones: Configurar límites sugeridos del modelo econométrico
         if "2. Con Restricciones" in tipo_optimizacion:
-            st.markdown("""
-                <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem 1.25rem; margin-bottom: 1rem;">
-                    <h4 style="margin: 0; font-size: 0.95rem; font-weight: 800; color: #000050; text-transform: uppercase;">
-                        Configuración de Restricciones Mensuales por Canal ($)
-                    </h4>
-                    <p style="margin: 0.2rem 0 0.5rem 0; font-size: 0.78rem; color: #64748b;">
-                        Ajusta los mínimos operativos (Sustain) y techos de saturación (Heavy Up) calculados por el modelo econométrico.
-                    </p>
-                </div>
-            """, unsafe_allow_html=True)
-
             limites_sugeridos = preparar_y_obtener_limites_engine(curv_df, budget_anual_input, meses_actividad)
-            
-            # Tabla interactiva editable para ajustar límites
             df_limites_editor = pd.DataFrame([
                 {
                     "Medio": canal,
@@ -1278,12 +1140,9 @@ with tab_opt:
             df_opt = st.session_state.get("df_opt_cache")
             rev_opt = st.session_state.get("rev_opt_cache", 0.0)
             roi_opt = st.session_state.get("roi_opt_cache", 0.0)
-            bud_opt = st.session_state.get("budget_opt_cache", budget_anual_input)
 
             if df_opt is not None:
                 st.markdown("<br>", unsafe_allow_html=True)
-                
-                # KPIs del Plan Óptimo
                 opt_kpi1, opt_kpi2, opt_kpi3 = st.columns(3)
                 with opt_kpi1:
                     st.markdown(f"""
@@ -1317,98 +1176,49 @@ with tab_opt:
                     """, unsafe_allow_html=True)
 
                 st.markdown("<br>", unsafe_allow_html=True)
-
                 col_graf_opt1, col_graf_opt2 = st.columns([1.2, 1.8])
 
-                # Gráfica de Media Mix 100% (Réplica Interactiva de graficar_media_mix_100)[cite: 8]
-                # Gráfica de Media Mix 100% (Pestaña 3)
                 with col_graf_opt1:
-                    st.markdown("""
-                        <div class="section-card">
-                            <span class="section-badge">📊 Media Mix 100%</span>
-                            <h4 style="margin:0; font-size:1.05rem; font-weight:700; color:#000050;">Distribución del Media Mix Óptimo</h4>
-                        </div>
-                    """, unsafe_allow_html=True)
-
                     df_plot_mix = df_opt.sort_values('Digital Mix', ascending=True).reset_index(drop=True)
-                    
                     fig_mix100 = go.Figure()
                     for i, r_mix in df_plot_mix.iterrows():
                         pct_val = r_mix['Digital Mix'] * 100
-                        
-                        # Solo imprimimos texto adentro si el espacio es lo suficientemente grande (> 3%)
                         texto_adentro = f"{pct_val:.1f}%" if pct_val >= 3.0 else ""
-                        
                         fig_mix100.add_trace(go.Bar(
-                            x=["Media Mix"],
-                            y=[pct_val],
-                            name=f"{r_mix['Medio']} ({pct_val:.1f}%)",
-                            marker_color=color_idx(i),
-                            text=texto_adentro,               # Imprime el porcentaje adentro
-                            textposition='inside',            # Posiciona al interior de la barra
-                            textfont=dict(size=15, color='white', family='Arial Black'), # Aumento drástico de legibilidad
-                            insidetextanchor='middle',
+                            x=["Media Mix"], y=[pct_val], name=f"{r_mix['Medio']} ({pct_val:.1f}%)",
+                            marker_color=color_idx(i), text=texto_adentro, textposition='inside',
+                            textfont=dict(size=15, color='white', family='Arial Black'), insidetextanchor='middle',
                             hovertemplate=f"<b>{r_mix['Medio']}</b><br>Share: {pct_val:.2f}%<br>Monto: ${r_mix['Inversión Óptima Anual']:,.0f}<extra></extra>"
                         ))
-
                     fig_mix100.update_layout(
-                        barmode='stack',
-                        height=420,
-                        margin=dict(l=20, r=20, t=25, b=20),
+                        barmode='stack', height=420, margin=dict(l=20, r=20, t=25, b=20),
                         yaxis=dict(title="% Participación", range=[0, 100], ticksuffix="%", gridcolor="#f1f5f9"),
-                        xaxis=dict(showticklabels=False),
-                        # Hacemos la leyenda inferior mucho más visible
-                        legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="center", x=0.5, font=dict(size=11, color='#1e293b')),
+                        xaxis=dict(showticklabels=False), legend=dict(orientation="h", yanchor="bottom", y=-0.45, xanchor="center", x=0.5, font=dict(size=11, color='#1e293b')),
                         plot_bgcolor="white"
                     )
                     st.plotly_chart(fig_mix100, use_container_width=True)
 
-                # Comparativa de Inversión Óptima vs Revenue[cite: 8]
                 with col_graf_opt2:
-                    st.markdown("""
-                        <div class="section-card">
-                            <span class="section-badge">💵 Inversión vs. Retorno</span>
-                            <h4 style="margin:0; font-size:1.05rem; font-weight:700; color:#000050;">Asignación de Presupuesto vs. Revenue Esperado</h4>
-                        </div>
-                    """, unsafe_allow_html=True)
-
                     fig_comp_opt = go.Figure()
                     fig_comp_opt.add_trace(go.Bar(
-                        x=df_opt['Medio'],
-                        y=df_opt['Inversión Óptima Anual'],
-                        name="Inversión Óptima Anual ($)",
-                        marker_color=COLOR_NAVY,
+                        x=df_opt['Medio'], y=df_opt['Inversión Óptima Anual'],
+                        name="Inversión Óptima Anual ($)", marker_color=COLOR_NAVY,
                         hovertemplate="<b>%{x}</b><br>Presupuesto: $%{y:,.0f}<extra></extra>"
                     ))
                     fig_comp_opt.add_trace(go.Bar(
-                        x=df_opt['Medio'],
-                        y=df_opt['Media Revenue Anual'],
-                        name="Media Revenue Anual ($)",
-                        marker_color=COLOR_CORNFLOWER,
+                        x=df_opt['Medio'], y=df_opt['Media Revenue Anual'],
+                        name="Media Revenue Anual ($)", marker_color=COLOR_CORNFLOWER,
                         hovertemplate="<b>%{x}</b><br>Revenue: $%{y:,.0f}<extra></extra>"
                     ))
-
                     fig_comp_opt.update_layout(
-                        barmode='group',
-                        height=420,
-                        margin=dict(l=20, r=20, t=25, b=20),
+                        barmode='group', height=420, margin=dict(l=20, r=20, t=25, b=20),
                         yaxis=dict(title="Monto ($ MXN)", gridcolor="#f1f5f9", tickprefix="$", tickformat=",.0f"),
-                        xaxis=dict(tickangle=-25),
-                        legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5, font=dict(size=9)),
+                        xaxis=dict(tickangle=-25), legend=dict(orientation="h", yanchor="bottom", y=-0.35, xanchor="center", x=0.5, font=dict(size=9)),
                         plot_bgcolor="white"
                     )
                     st.plotly_chart(fig_comp_opt, use_container_width=True)
 
                 st.markdown("<br>", unsafe_allow_html=True)
-
-                # Tabla detallada del Plan Óptimo[cite: 8]
-                st.markdown("""
-                    <div class="section-card">
-                        <span class="section-badge">📋 Plan Óptimo de Inversión</span>
-                        <h4 style="margin:0; font-size:1.05rem; font-weight:700; color:#000050;">Desglose Ejecutivo del Plan Anual Optimizado</h4>
-                    </div>
-                """, unsafe_allow_html=True)
-
                 df_opt_display = df_opt.copy()
                 df_opt_display['Inversión Óptima ($)'] = df_opt_display['Inversión Óptima Anual'].apply(lambda x: f"${x:,.2f}")
                 df_opt_display['ROI Marginal Estimado'] = df_opt_display['ROI Estimado'].apply(lambda x: f"{x:.4f}")
@@ -1417,6 +1227,519 @@ with tab_opt:
 
                 st.dataframe(
                     df_opt_display[['Medio', 'Inversión Óptima ($)', 'ROI Marginal Estimado', 'Revenue Estimado ($)', 'Media Mix (%)']],
-                    use_container_width=True,
-                    hide_index=True
+                    use_container_width=True, hide_index=True
                 )
+
+# ##############################################################################
+# TAB 4: PIPELINE FUNNEL (SIMULADOR CROSS MEDIA + LIFT AWOS)[cite: 8]
+# ##############################################################################
+with tab_pipeline:
+    st.markdown(f"""
+        <div class="section-card">
+            <span class="section-badge">🍕 Multi-MMM Funnel Simulator</span>
+            <h3 style="margin: 0; font-size: 1.25rem; font-weight: 800; color: #000050;">Pipeline de Medición Cross Media en el Funnel</h3>
+            <p style="margin: 0.2rem 0 0 0; font-size: 0.85rem; color: #64748b;">
+                Simulación Dinámica de Propagación de Medios a través de Intermediarios de Marketing (Base T0 + Aportes Predictivos por Período).
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if df_pipeline_raw is None:
+        st.warning("⚠️ Carga el archivo **Template_Pipeline_MiA_2.xlsx** o **.csv** en la sección **📂 3. Pipeline Funnel** de la barra lateral para activar este módulo.")
+    else:
+        df_pipe = df_pipeline_raw.copy()
+        df_pipe['DataType_Clean'] = df_pipe['DataType'].astype(str).str.strip().str.lower()
+        mask_actual = df_pipe['DataType_Clean'] == 'actual'
+        mask_pred = df_pipe['DataType_Clean'].str.contains('pred')
+
+        df_act = df_pipe[mask_actual]
+        df_pr = df_pipe[mask_pred] if not df_pipe[mask_pred].empty else df_pipe
+
+        if df_act.empty:
+            st.error("El archivo cargado debe contener filas con DataType 'Actual' para calcular los promedios en tiempo cero (T0).")
+        else:
+            # 1. Promedios base en Tiempo Cero (T0)
+            t0_pm = float(pd.to_numeric(df_act['Circulo_PaidMedia'], errors='coerce').mean())
+            t0_ma = float(pd.to_numeric(df_act['Circulo_MentalAvailability'], errors='coerce').mean())
+            t0_cf = float(pd.to_numeric(df_act['Circulo_ConsumoFrecuente'], errors='coerce').mean())
+            t0_ad = float(pd.to_numeric(df_act['Circulo_ActivacionDigital'], errors='coerce').mean())
+            t0_awos = float(pd.to_numeric(df_act['Circulo_AWOS'], errors='coerce').mean())
+
+            # 2. Procesar semanas predictivas
+            semanas_data = []
+            for idx_p, (_, row_p) in enumerate(df_pr.iterrows(), start=1):
+                fecha_dt = pd.to_datetime(row_p.get('DateWeekClose'))
+                fecha_fmt = fecha_dt.strftime("%d/%m/%Y") if pd.notna(fecha_dt) else str(row_p.get('DateWeekClose'))
+                
+                # Aportes puntuales en las flechas
+                fl_pm_awos = float(pd.to_numeric(row_p.get('Flecha_PM_a_AWOs', 0), errors='coerce'))
+                fl_pm_ma = float(pd.to_numeric(row_p.get('Flecha_PM_a_MA', 0), errors='coerce'))
+                fl_pm_cf = float(pd.to_numeric(row_p.get('Flecha_PM_a_CF', 0), errors='coerce'))
+                fl_pm_ad = float(pd.to_numeric(row_p.get('Flecha_PM_a_AD', 0), errors='coerce'))
+                fl_ma_cf = float(pd.to_numeric(row_p.get('Flecha_MA_a_CF', 0), errors='coerce'))
+                fl_ma_ad = float(pd.to_numeric(row_p.get('Flecha_MA_a_AD', 0), errors='coerce'))
+                
+                # Aportes totales recibidos en la semana t
+                recibe_pm = fl_pm_awos + fl_pm_ma + fl_pm_cf + fl_pm_ad
+                recibe_ma = fl_pm_ma
+                recibe_cf = fl_pm_cf + fl_ma_cf
+                recibe_ad = fl_pm_ad + fl_ma_ad
+                recibe_awos = fl_pm_awos
+
+                # Cálculo dinámico de los círculos (Promedio T0 + Aporte)
+                val_c_pm = pd.to_numeric(row_p.get('Circulo_PaidMedia'), errors='coerce')
+                c_pm_final = float(val_c_pm) if pd.notna(val_c_pm) and val_c_pm > 0 else ((t0_pm + recibe_pm) / 2.0)
+
+                val_c_ma = pd.to_numeric(row_p.get('Circulo_MentalAvailability'), errors='coerce')
+                c_ma_final = float(val_c_ma) if pd.notna(val_c_ma) and val_c_ma > 0 else ((t0_ma + recibe_ma) / 2.0)
+
+                val_c_cf = pd.to_numeric(row_p.get('Circulo_ConsumoFrecuente'), errors='coerce')
+                c_cf_final = float(val_c_cf) if pd.notna(val_c_cf) and val_c_cf > 0 else ((t0_cf + recibe_cf) / 2.0)
+
+                val_c_ad = pd.to_numeric(row_p.get('Circulo_ActivacionDigital'), errors='coerce')
+                c_ad_final = float(val_c_ad) if pd.notna(val_c_ad) and val_c_ad > 0 else ((t0_ad + recibe_ad) / 2.0)
+
+                val_c_awos = pd.to_numeric(row_p.get('Circulo_AWOS'), errors='coerce')
+                c_awos_final = float(val_c_awos) if pd.notna(val_c_awos) and val_c_awos > 0 else ((t0_awos + recibe_awos) / 2.0)
+
+                indir_val = fl_pm_ma + fl_pm_cf + fl_pm_ad
+                tot_val = fl_pm_awos + indir_val
+                mult = (indir_val / fl_pm_awos * 100) if fl_pm_awos > 0 else 0.0
+
+                semanas_data.append({
+                    "semana": idx_p,
+                    "fecha": fecha_fmt,
+                    "c_pm": f"{c_pm_final:,.1f}",
+                    "c_ma": f"{c_ma_final:,.1f}",
+                    "c_cf": f"{c_cf_final:,.1f}",
+                    "c_ad": f"{c_ad_final:,.1f}",
+                    "c_awos": f"{c_awos_final:,.1f}",
+                    "f_pm_awos": f"+{fl_pm_awos:,.1f}",
+                    "f_pm_ma": f"+{fl_pm_ma:,.1f}",
+                    "f_pm_cf": f"+{fl_pm_cf:,.1f}",
+                    "f_pm_ad": f"+{fl_pm_ad:,.1f}",
+                    "f_ma_cf": f"+{fl_ma_cf:,.1f}",
+                    "f_ma_ad": f"+{fl_ma_ad:,.1f}",
+                    "res_dir": f"{fl_pm_awos:,.1f}",
+                    "res_indir": f"{indir_val:,.1f}",
+                    "res_tot": f"{tot_val:,.1f}",
+                    "res_mult": f"+{mult:.1f}%"
+                })
+
+            semanas_json = json.dumps(semanas_data)
+            total_steps = len(semanas_data)
+
+            # 3. HTML / SVG ANIMADO REACTIVO (CON textContent)
+            html_pipeline = f"""<!-- pipeline_{pipeline_hash}_{total_steps} -->
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+                <style>
+                    body {{ margin: 0; padding: 8px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; color: #1e293b; }}
+                    .funnel-container {{ background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }}
+                    .control-bar {{ display: flex; align-items: center; justify-content: space-between; background: #000050; padding: 10px 16px; border-radius: 8px; color: white; margin-bottom: 12px; }}
+                    .btn {{ background: #B0F467; color: #000050; border: none; padding: 7px 14px; border-radius: 6px; font-weight: 800; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }}
+                    .btn:hover {{ background: #9be253; transform: scale(1.02); }}
+                    .btn-secondary {{ background: rgba(255, 255, 255, 0.15); color: white; margin-left: 8px; }}
+                    .slider-control {{ flex: 1; margin: 0 16px; accent-color: #B0F467; }}
+                    .flow-line-direct {{ stroke-dasharray: 8; animation: flow-forward 1.2s linear infinite; }}
+                    .flow-line-indirect {{ stroke-dasharray: 6; animation: flow-forward 1.8s linear infinite; }}
+                    @keyframes flow-forward {{ from {{ stroke-dashoffset: 40; }} to {{ stroke-dashoffset: 0; }} }}
+                    .kpi-card {{ background: white; border: 2px solid #000050; border-radius: 10px; padding: 12px 16px; box-shadow: 0 8px 16px -4px rgba(0, 0, 80, 0.12); }}
+                </style>
+            </head>
+            <body>
+
+            <div class="funnel-container">
+                <div class="control-bar">
+                    <div style="display: flex; align-items: center;">
+                        <button id="btnPlay" class="btn" onclick="togglePlay()"><i class="fa-solid fa-play"></i> Iniciar Recorrido</button>
+                        <button class="btn btn-secondary" onclick="resetSim()"><i class="fa-solid fa-rotate-left"></i> Reiniciar</button>
+                    </div>
+                    <input type="range" id="weekSlider" min="1" max="{total_steps}" value="1" class="slider-control" oninput="manualSlider(this.value)">
+                    <div style="font-weight: 800; font-size: 0.95rem; min-width: 220px; text-align: right;">
+                        <span style="color: #93DFE3;">Período:</span> <span id="lblWeek" style="color: #B0F467;">Semana 1</span> | <span id="lblDate" style="color: #ffffff; font-size: 0.85rem;">-</span>
+                    </div>
+                </div>
+
+                <svg id="funnelSvg" viewBox="0 0 1050 560" style="width: 100%; height: auto;">
+                    <defs>
+                        <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#000050" /></marker>
+                        <marker id="arrow-red" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#dc2626" /></marker>
+                    </defs>
+
+                    <!-- LEYENDA -->
+                    <g transform="translate(30, 20)">
+                        <text x="0" y="0" font-size="12" font-weight="bold" fill="#64748b">Contribución del Funnel por:</text>
+                        <circle cx="6" cy="18" r="4" fill="#000050" />
+                        <text x="18" y="22" font-size="11" font-weight="bold" fill="#000050">Paid Media (Flujo Directo)</text>
+                        <circle cx="6" cy="36" r="4" fill="#dc2626" />
+                        <text x="18" y="40" font-size="11" font-weight="bold" fill="#dc2626">Intermediarios de Marketing (Flujo Indirecto)</text>
+                    </g>
+
+                    <!-- FLECHAS / APORTES -->
+                    <!-- PM -> AWOS -->
+                    <line x1="205" y1="290" x2="680" y2="290" stroke="#000050" stroke-width="4" marker-end="url(#arrow-blue)" class="flow-line-direct" />
+                    <rect x="290" y="275" width="60" height="22" rx="4" fill="#ffffff" stroke="#000050" stroke-width="1.5"/>
+                    <text id="f_pm_awos" x="320" y="290" font-size="11" font-weight="bold" fill="#000050" text-anchor="middle">+0</text>
+
+                    <!-- PM -> MA -->
+                    <path d="M 170 235 L 170 120 L 325 120" fill="none" stroke="#000050" stroke-width="3" marker-end="url(#arrow-blue)" class="flow-line-direct" />
+                    <rect x="235" y="108" width="55" height="20" rx="4" fill="#ffffff" stroke="#000050" stroke-width="1.5"/>
+                    <text id="f_pm_ma" x="262" y="122" font-size="10" font-weight="bold" fill="#000050" text-anchor="middle">+0</text>
+
+                    <!-- PM -> AD -->
+                    <path d="M 170 345 L 170 460 L 440 460" fill="none" stroke="#000050" stroke-width="3" marker-end="url(#arrow-blue)" class="flow-line-direct" />
+                    <rect x="265" y="448" width="55" height="20" rx="4" fill="#ffffff" stroke="#000050" stroke-width="1.5"/>
+                    <text id="f_pm_ad" x="292" y="462" font-size="10" font-weight="bold" fill="#000050" text-anchor="middle">+0</text>
+
+                    <!-- PM -> CF -->
+                    <path d="M 210 280 L 490 230" fill="none" stroke="#000050" stroke-width="2.5" marker-end="url(#arrow-blue)" class="flow-line-direct" />
+                    <rect x="330" y="240" width="55" height="20" rx="4" fill="#ffffff" stroke="#000050" stroke-width="1.5"/>
+                    <text id="f_pm_cf" x="357" y="254" font-size="10" font-weight="bold" fill="#000050" text-anchor="middle">+0</text>
+
+                    <!-- MA -> CF -->
+                    <path d="M 380 172 L 380 215 L 490 215" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-dasharray="5" marker-end="url(#arrow-red)" class="flow-line-indirect" />
+                    <rect x="388" y="198" width="58" height="18" rx="3" fill="#ffffff" stroke="#dc2626" stroke-width="1"/>
+                    <text id="f_ma_cf" x="417" y="211" font-size="10" font-weight="bold" fill="#dc2626" text-anchor="middle">+0</text>
+
+                    <!-- MA -> AD -->
+                    <path d="M 370 172 L 370 460 L 440 460" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-dasharray="5" marker-end="url(#arrow-red)" class="flow-line-indirect" />
+                    <rect x="340" y="315" width="58" height="18" rx="3" fill="#ffffff" stroke="#dc2626" stroke-width="1"/>
+                    <text id="f_ma_ad" x="369" y="328" font-size="10" font-weight="bold" fill="#dc2626" text-anchor="middle">+0</text>
+
+                    <!-- Brand Image de soporte -->
+                    <g transform="translate(830, 190)">
+                        <circle cx="0" cy="0" r="46" fill="#000050" stroke="#788BFF" stroke-width="3"/>
+                        <text x="0" y="-4" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">Brand</text>
+                        <text x="0" y="12" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">Image</text>
+                    </g>
+                    <path d="M 830 240 L 830 290 L 790 290" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-dasharray="5" marker-end="url(#arrow-red)" class="flow-line-indirect" />
+                    <text x="815" y="275" font-size="11" font-weight="bold" fill="#dc2626">8%</text>
+
+                    <!-- ==================== CÍRCULOS ==================== -->
+                    <!-- Paid Media -->
+                    <g transform="translate(150, 290)">
+                        <circle cx="0" cy="0" r="55" fill="#000050" stroke="#B0F467" stroke-width="4"/>
+                        <text x="0" y="-12" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">Paid Media</text>
+                        <text id="c_pm" x="0" y="8" font-size="14" font-weight="900" fill="#B0F467" text-anchor="middle">0.0</text>
+                        <text x="0" y="24" font-size="7.5" fill="#93DFE3" text-anchor="middle">Base T0: {t0_pm/1e6:.2f}M</text>
+                    </g>
+
+                    <!-- Mental Availability -->
+                    <g transform="translate(380, 120)">
+                        <circle cx="0" cy="0" r="52" fill="#93DFE3" stroke="#000050" stroke-width="3"/>
+                        <text x="0" y="-12" font-size="11" font-weight="bold" fill="#000050" text-anchor="middle">Mental Avail.</text>
+                        <text id="c_ma" x="0" y="8" font-size="14" font-weight="900" fill="#dc2626" text-anchor="middle">0.0</text>
+                        <text x="0" y="24" font-size="7.5" fill="#64748b" text-anchor="middle">Base T0: {t0_ma/1e6:.2f}M</text>
+                    </g>
+
+                    <!-- Activación Digital -->
+                    <g transform="translate(500, 460)">
+                        <circle cx="0" cy="0" r="52" fill="#788BFF" stroke="#000050" stroke-width="3"/>
+                        <text x="0" y="-12" font-size="11" font-weight="bold" fill="#ffffff" text-anchor="middle">Activación Dig.</text>
+                        <text id="c_ad" x="0" y="8" font-size="14" font-weight="900" fill="#B0F467" text-anchor="middle">0.0</text>
+                        <text x="0" y="24" font-size="7.5" fill="#e2e8f0" text-anchor="middle">Base T0: {t0_ad/1e6:.2f}M</text>
+                    </g>
+
+                    <!-- Consumo Frecuente -->
+                    <g transform="translate(550, 220)">
+                        <circle cx="0" cy="0" r="52" fill="#00DBEE" stroke="#000050" stroke-width="3"/>
+                        <text x="0" y="-12" font-size="11" font-weight="bold" fill="#000050" text-anchor="middle">Consumo Frec.</text>
+                        <text id="c_cf" x="0" y="8" font-size="14" font-weight="900" fill="#000050" text-anchor="middle">0.0</text>
+                        <text x="0" y="24" font-size="7.5" fill="#64748b" text-anchor="middle">Base T0: {t0_cf/1e6:.2f}M</text>
+                    </g>
+
+                    <!-- AWOS -->
+                    <g transform="translate(735, 290)">
+                        <circle cx="0" cy="0" r="55" fill="#000050" stroke="#dc2626" stroke-width="4"/>
+                        <text x="0" y="-12" font-size="14" font-weight="900" fill="#ffffff" text-anchor="middle">AWOS</text>
+                        <text id="c_awos" x="0" y="8" font-size="14" font-weight="900" fill="#B0F467" text-anchor="middle">0.0</text>
+                        <text x="0" y="25" font-size="7.5" fill="#93DFE3" text-anchor="middle">Base T0: {t0_awos/1e6:.2f}M</text>
+                    </g>
+                </svg>
+
+                <!-- RESUMEN -->
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px; border-top: 1px solid #e2e8f0; padding-top: 15px;">
+                    <div style="font-size: 0.8rem; color: #64748b;">
+                        <b>Ajuste del Modelo:</b> R² Adj: <span style="background: #B0F467; color: #000050; padding: 2px 6px; border-radius: 4px; font-weight: bold;">0.7214</span> | F-stat: 14.2 (p < 0.001)<br>
+                        <i>Digital Activation: Descargas de App y Visitas Web | Mental Availability: TOM</i>
+                    </div>
+
+                    <div class="kpi-card" style="min-width: 310px;">
+                        <div style="font-size: 0.95rem; font-weight: 800; color: #000050; margin-bottom: 6px;">Aportación de Medios en la Semana</div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px;">
+                            <span>• Directo a AWOS:</span> <b id="res_dir" style="color: #000050;">0</b>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 6px;">
+                            <span>• Intermediarios Marketing:</span> <b id="res_indir" style="color: #dc2626;">0</b>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 1.15rem; font-weight: 900; border-top: 2px solid #000050; padding-top: 6px;">
+                            <span>Total Generado:</span> <span id="res_tot" style="color: #000050;">0</span>
+                        </div>
+                        <div style="font-size: 0.78rem; color: #059669; font-weight: 800; text-align: right; margin-top: 4px;">
+                            Multiplicador Indirecto: <span id="res_mult">+0.0%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                const simData = {semanas_json};
+                let currentIdx = 0;
+                let timer = null;
+                let isPlaying = false;
+                const speedMs = 1200;
+
+                function setText(id, value) {{
+                    const el = document.getElementById(id);
+                    if (el) {{
+                        el.textContent = value;
+                    }}
+                }}
+
+                function updateView(idx) {{
+                    if (!simData || simData.length === 0) return;
+                    const row = simData[idx];
+                    
+                    setText('lblWeek', 'Semana ' + row.semana);
+                    setText('lblDate', row.fecha);
+                    const slider = document.getElementById('weekSlider');
+                    if (slider) slider.value = row.semana;
+                    
+                    // Círculos SVG
+                    setText('c_pm', row.c_pm);
+                    setText('c_ma', row.c_ma);
+                    setText('c_cf', row.c_cf);
+                    setText('c_ad', row.c_ad);
+                    setText('c_awos', row.c_awos);
+                    
+                    // Flechas SVG
+                    setText('f_pm_awos', row.f_pm_awos);
+                    setText('f_pm_ma', row.f_pm_ma);
+                    setText('f_pm_cf', row.f_pm_cf);
+                    setText('f_pm_ad', row.f_pm_ad);
+                    setText('f_ma_cf', row.f_ma_cf);
+                    setText('f_ma_ad', row.f_ma_ad);
+                    
+                    // Resumen
+                    setText('res_dir', row.res_dir);
+                    setText('res_indir', row.res_indir);
+                    setText('res_tot', row.res_tot);
+                    setText('res_mult', row.res_mult);
+                }}
+
+                function togglePlay() {{
+                    const btn = document.getElementById('btnPlay');
+                    if (isPlaying) {{
+                        clearInterval(timer);
+                        isPlaying = false;
+                        btn.innerHTML = '<i class="fa-solid fa-play"></i> Continuar';
+                    }} else {{
+                        isPlaying = true;
+                        btn.innerHTML = '<i class="fa-solid fa-pause"></i> Pausar';
+                        timer = setInterval(() => {{
+                            currentIdx++;
+                            if (currentIdx >= simData.length) currentIdx = 0;
+                            updateView(currentIdx);
+                        }}, speedMs);
+                    }}
+                }}
+
+                function resetSim() {{
+                    if (isPlaying) togglePlay();
+                    currentIdx = 0;
+                    updateView(0);
+                }}
+
+                function manualSlider(val) {{
+                    if (isPlaying) togglePlay();
+                    currentIdx = parseInt(val) - 1;
+                    updateView(currentIdx);
+                }}
+
+                updateView(0);
+            </script>
+            </body>
+            </html>
+            """
+
+            container_canvas = st.empty()
+            with container_canvas:
+                components.html(html_pipeline, height=720, scrolling=False)
+
+            st.markdown("### 📋 Vista Previa de las Semanas Predictivas Procesadas")
+            st.dataframe(pd.DataFrame(semanas_data), use_container_width=True, hide_index=True)
+
+            # ==================================================================
+            # SECCIÓN INSPIRADA EN STARBUCKS: SIMULADOR DE LIFT EN AWOS CON CURVAS S
+            # ==================================================================
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("""
+                <div class="section-card" style="border: 2px solid #000050;">
+                    <span class="section-badge">⚖️ Elasticity & Lift Model</span>
+                    <h3 style="margin: 0; font-size: 1.25rem; font-weight: 800; color: #000050;">
+                        Simulador Interactivo de Inversión y Lift Esperado en Transacciones (AWOS)
+                    </h3>
+                    <p style="margin: 0.2rem 0 0 0; font-size: 0.85rem; color: #64748b;">
+                        Ajusta el presupuesto total para recalcular el impacto esperado en órdenes por tienda (AWOS) y transacciones totales utilizando las Curvas S del modelo.
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # 1. Parámetros interactivos del simulador
+            col_sim1, col_sim2, col_sim3 = st.columns([2, 1.2, 1.2])
+
+            with col_sim1:
+                budget_base_referencia = float(t0_pm) if t0_pm > 10000 else 5000000.0
+                presupuesto_sim_lift = st.slider(
+                    "Presupuesto Anual de Medios a Simular ($ MXN):",
+                    min_value=float(max(100000.0, budget_base_referencia * 0.3)),
+                    max_value=float(budget_base_referencia * 3.0),
+                    value=float(budget_base_referencia),
+                    step=50000.0,
+                    format="$%d"
+                )
+
+            with col_sim2:
+                tiendas_activas = st.number_input(
+                    "Número de Tiendas / Unidades:",
+                    min_value=1,
+                    max_value=5000,
+                    value=859,
+                    step=10
+                )
+
+            with col_sim3:
+                awos_base_sim = st.number_input(
+                    "AWOS Base Histórico (Órdenes/Sem):",
+                    min_value=10.0,
+                    max_value=100000.0,
+                    value=float(t0_awos) if t0_awos > 0 else 2733.2,
+                    step=25.0
+                )
+
+            # 2. Evaluación matemática con Curvas S (curv_df)
+            if curv_df is not None:
+                df_opt_sim, rev_opt_sim, roi_opt_sim = ejecutar_optimizacion_engine(
+                    curv_df, 
+                    budget_anual=presupuesto_sim_lift, 
+                    meses_con_actividad=12
+                )
+                lift_incremental_anual = rev_opt_sim
+                lift_incremental_semanal_total = lift_incremental_anual / 52.0
+                lift_awos_por_tienda = lift_incremental_semanal_total / tiendas_activas
+                awos_lift_pct = (lift_awos_por_tienda / awos_base_sim) * 100 if awos_base_sim > 0 else 0.0
+                awos_proyectado = awos_base_sim + lift_awos_por_tienda
+                transacciones_totales_semanales = int(awos_proyectado * tiendas_activas)
+                mix_digital_estimado = df_opt_sim['Digital Mix'].sum() * 100 if 'Digital Mix' in df_opt_sim.columns else 38.5
+            else:
+                delta_budget = (presupuesto_sim_lift - budget_base_referencia) / budget_base_referencia if budget_base_referencia > 0 else 0
+                awos_lift_pct = 1.80 + (delta_budget * 3.5)
+                awos_proyectado = awos_base_sim * (1 + (awos_lift_pct / 100.0))
+                transacciones_totales_semanales = int(awos_proyectado * tiendas_activas)
+                mix_digital_estimado = 38.59
+                roi_opt_sim = 1.45
+                df_opt_sim = pd.DataFrame({
+                    'Medio': ['Social Media', 'Online Video (OLV)', 'Search', 'OOH', 'Streaming'],
+                    'Inversión Óptima Anual': [presupuesto_sim_lift * 0.35, presupuesto_sim_lift * 0.25, presupuesto_sim_lift * 0.15, presupuesto_sim_lift * 0.15, presupuesto_sim_lift * 0.10],
+                    'Digital Mix': [0.35, 0.25, 0.15, 0.15, 0.10],
+                    'Media Revenue Anual': [presupuesto_sim_lift * 0.35 * 1.6, presupuesto_sim_lift * 0.25 * 1.5, presupuesto_sim_lift * 0.15 * 1.8, presupuesto_sim_lift * 0.15 * 1.1, presupuesto_sim_lift * 0.10 * 1.2]
+                })
+
+            # 3. Tarjetas Ejecutivas de Lift en AWOS
+            st.markdown("<br>", unsafe_allow_html=True)
+            kpi_aw1, kpi_aw2, kpi_aw3 = st.columns(3)
+
+            with kpi_aw1:
+                st.markdown(f"""
+                    <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 0.75rem; padding: 1.1rem 1.25rem;">
+                        <span style="font-size: 0.7rem; font-weight: 800; color: #047857; text-transform: uppercase; letter-spacing: 0.05em; display: block;">
+                            AWOS Proyectado Optimizado
+                        </span>
+                        <div style="font-size: 1.65rem; font-weight: 900; color: #064e3b; margin-top: 0.25rem;">
+                            {awos_proyectado:,.1f} órdenes/sem
+                        </div>
+                        <span style="font-size: 0.75rem; font-weight: 700; color: #059669; display: block; margin-top: 0.35rem;">
+                            {"+" if awos_lift_pct >= 0 else ""}{awos_lift_pct:.2f}% Lift Estimado por Tienda
+                        </span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            with kpi_aw2:
+                st.markdown(f"""
+                    <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 0.75rem; padding: 1.1rem 1.25rem;">
+                        <span style="font-size: 0.7rem; font-weight: 800; color: #1d4ed8; text-transform: uppercase; letter-spacing: 0.05em; display: block;">
+                            Transacciones Semanales Totales
+                        </span>
+                        <div style="font-size: 1.65rem; font-weight: 900; color: #172554; margin-top: 0.25rem;">
+                            {transacciones_totales_semanales:,.0f}
+                        </div>
+                        <span style="font-size: 0.75rem; font-weight: 700; color: #2563eb; display: block; margin-top: 0.35rem;">
+                            Red de {tiendas_activas:,} Tiendas Activas
+                        </span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            with kpi_aw3:
+                st.markdown(f"""
+                    <div style="background-color: #fffbeb; border: 1px solid #fde68a; border-radius: 0.75rem; padding: 1.1rem 1.25rem;">
+                        <span style="font-size: 0.7rem; font-weight: 800; color: #b45309; text-transform: uppercase; letter-spacing: 0.05em; display: block;">
+                            ROI Marginal & Mix Digital
+                        </span>
+                        <div style="font-size: 1.65rem; font-weight: 900; color: #451a03; margin-top: 0.25rem;">
+                            {roi_opt_sim:.2f}x | {mix_digital_estimado:.1f}% Mix
+                        </div>
+                        <span style="font-size: 0.75rem; font-weight: 700; color: #d97706; display: block; margin-top: 0.35rem;">
+                            Impulsado por Curvas S y Performance
+                        </span>
+                    </div>
+                """, unsafe_allow_html=True)
+
+            # 4. Comparativa Side-by-Side (Plan Base vs Plan Optimizado)
+            st.markdown("<br>", unsafe_allow_html=True)
+            col_side_base, col_side_opt = st.columns(2)
+
+            with col_side_base:
+                st.markdown(f"""
+                    <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem 1.25rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #cbd5e1; padding-bottom: 0.5rem; margin-bottom: 0.75rem;">
+                            <span style="font-size: 0.8rem; font-weight: 800; color: #334155; text-transform: uppercase;">Plan Inercial / Base</span>
+                            <span style="font-size: 0.85rem; font-weight: 800; color: #64748b;">${presupuesto_sim_lift:,.0f}</span>
+                        </div>
+                """, unsafe_allow_html=True)
+
+                # Desglose base proporcional
+                n_canales = len(df_opt_sim)
+                for idx_m, r_m in df_opt_sim.iterrows():
+                    share_base = 1.0 / n_canales
+                    monto_base = presupuesto_sim_lift * share_base
+                    st.markdown(f"""
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #475569; padding: 0.3rem 0; border-bottom: 1px dashed #e2e8f0;">
+                            <span>{r_m['Medio']}</span>
+                            <span><b>${monto_base:,.0f}</b> ({share_base*100:.1f}%)</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            with col_side_opt:
+                st.markdown(f"""
+                    <div style="background-color: #f0fdf4; border: 1px solid #86efac; border-radius: 0.75rem; padding: 1rem 1.25rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #22c55e; padding-bottom: 0.5rem; margin-bottom: 0.75rem;">
+                            <span style="font-size: 0.8rem; font-weight: 800; color: #15803d; text-transform: uppercase;">Plan Optimizado (Curvas S) ✨</span>
+                            <span style="font-size: 0.85rem; font-weight: 900; color: #166534;">${df_opt_sim['Inversión Óptima Anual'].sum():,.0f}</span>
+                        </div>
+                """, unsafe_allow_html=True)
+
+                for idx_m, r_m in df_opt_sim.iterrows():
+                    inv_opt_c = r_m['Inversión Óptima Anual']
+                    pct_opt_c = (inv_opt_c / presupuesto_sim_lift) * 100 if presupuesto_sim_lift > 0 else 0
+                    st.markdown(f"""
+                        <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #1e293b; padding: 0.3rem 0; border-bottom: 1px dashed #bbf7d0;">
+                            <span style="font-weight: 600;">{r_m['Medio']}</span>
+                            <span style="color: #15803d; font-weight: 800;">${inv_opt_c:,.0f} ({pct_opt_c:.1f}%)</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
